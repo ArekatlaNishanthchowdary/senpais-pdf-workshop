@@ -1,6 +1,7 @@
-"""Tests for the pdfplumber/python-docx-backed PDF to Word operation (`extras`
-group). Skips if either dependency isn't installed, same adaptive pattern as
-test_convert.py / test_tables.py.
+"""Tests for the pdfplumber/python-docx-backed PDF to Word operation.
+pdfplumber is a core dependency; python-docx is the `extras`-gated one, so
+this only skips the python-docx-dependent path when that's missing, same
+adaptive pattern as test_convert.py / test_tables.py.
 """
 
 from __future__ import annotations
@@ -16,10 +17,7 @@ from senpais_pdf_workshop.core.registry import REGISTRY, load_operations
 
 load_operations()
 
-HAS_WORD_DEPS = (
-    importlib.util.find_spec("pdfplumber") is not None
-    and importlib.util.find_spec("docx") is not None
-)
+HAS_WORD_DEPS = importlib.util.find_spec("docx") is not None
 
 
 @pytest.fixture

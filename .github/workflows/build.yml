@@ -1,0 +1,74 @@
+name: Build packaged app
+
+# Builds a PyInstaller package of the desktop app on all three platforms.
+# Not yet exercised against a real GitHub Actions run in this repo -- written
+# against PyInstaller's documented CLI and PySide6's known Linux runtime
+# dependencies, but the first real push is the first time this actually runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: SenpaisPdfWorkshop-windows
+          - os: macos-latest
+            artifact_name: SenpaisPdfWorkshop-macos
+          - os: ubuntu-latest
+            artifact_name: SenpaisPdfWorkshop-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # PySide6 needs these to even import on a headless Linux runner --
+      # without them, pip install succeeds but "import PySide6" segfaults.
+      - name: Install Linux Qt runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libgl1
+
+      - name: Install the project
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -q
+
+      # --icon needs a .ico on Windows; there's no equivalent .icns in this
+      # repo yet, so macOS/Linux builds skip it and get PyInstaller's default.
+      - name: Build with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          pyinstaller --windowed --name SenpaisPdfWorkshop
+          --icon src/senpais_pdf_workshop/gui/assets/icon.ico
+          --add-data "src/senpais_pdf_workshop/gui/assets;senpais_pdf_workshop/gui/assets"
+          --collect-submodules senpais_pdf_workshop.core.ops
+          packaging/run_gui.py
+
+      - name: Build with PyInstaller (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: >
+          pyinstaller --windowed --name SenpaisPdfWorkshop
+          --add-data "src/senpais_pdf_workshop/gui/assets:senpais_pdf_workshop/gui/assets"
+          --collect-submodules senpais_pdf_workshop.core.ops
+          packaging/run_gui.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/SenpaisPdfWorkshop*
+          if-no-files-found: error

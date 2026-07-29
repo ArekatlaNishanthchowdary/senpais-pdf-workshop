@@ -7,9 +7,11 @@ registry. Add an operation to core/ops and it appears here automatically.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from .core.pipeline import Step, run_pipeline
 from .core.registry import REGISTRY, categories, load_operations
 
 
@@ -18,6 +20,24 @@ def build_parser() -> argparse.ArgumentParser:
         prog="senpai", description="Local PDF tools. Nothing leaves your machine."
     )
     subs = parser.add_subparsers(dest="operation", metavar="OPERATION")
+
+    pipeline = subs.add_parser(
+        "pipeline",
+        help="[Pipeline] Chain operations, feeding each one's output into the next.",
+    )
+    pipeline.add_argument(
+        "steps",
+        type=Path,
+        help='JSON file: [{"op": "rotate", "params": {"angle": "90"}}, ...]',
+    )
+    pipeline.add_argument("sources", nargs="+", type=Path, help="Input files")
+    pipeline.add_argument(
+        "-o",
+        "--out",
+        type=Path,
+        default=Path.cwd(),
+        help="Output directory (default: current directory)",
+    )
 
     for category, ops in categories().items():
         for op in ops:
@@ -66,11 +86,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
-    op = REGISTRY[args.operation]
-    values = {p.name: getattr(args, p.name) for p in op.params}
-
     try:
-        written = op.run([Path(s) for s in args.sources], Path(args.out), **values)
+        if args.operation == "pipeline":
+            spec = json.loads(args.steps.read_text(encoding="utf-8"))
+            steps = [Step(entry["op"], entry.get("params", {})) for entry in spec]
+            written = run_pipeline(steps, [Path(s) for s in args.sources], Path(args.out))
+        else:
+            op = REGISTRY[args.operation]
+            values = {p.name: getattr(args, p.name) for p in op.params}
+            written = op.run([Path(s) for s in args.sources], Path(args.out), **values)
     except Exception as exc:  # surfaced to the user, not a traceback
         print(f"senpai: {exc}", file=sys.stderr)
         return 2

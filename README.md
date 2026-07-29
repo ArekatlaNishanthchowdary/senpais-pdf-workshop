@@ -4,16 +4,16 @@
 
 # Senpai's Pdf Workshop
 
-**44 local PDF tools. No upload, no account, no Docker, no page limits.**
+**45 local PDF tools. No upload, no account, no Docker, no page limits.**
 
 Everything runs in the process on your own machine — a desktop window and a command
-line, generated from the same 44-operation registry, with zero interface code
+line, generated from the same 45-operation registry, with zero interface code
 written per tool.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#packaging)
-[![Tests: 75 passing](https://img.shields.io/badge/tests-75%20passing-brightgreen.svg)](tests)
+[![Tests: 88 passing](https://img.shields.io/badge/tests-88%20passing-brightgreen.svg)](tests)
 
 </div>
 
@@ -25,7 +25,8 @@ written per tool.
 
 - [Why this exists](#why-this-exists)
 - [Quick start](#quick-start)
-- [What it can do](#what-it-can-do-44-operations)
+- [What it can do](#what-it-can-do-45-operations)
+- [Pipelines, batch mode, and other GUI features](#pipelines-batch-mode-and-other-gui-features)
 - [How it is put together](#how-it-is-put-together)
 - [Adding an operation](#adding-an-operation)
 - [Licensing](#licensing--read-before-adding-a-dependency)
@@ -40,7 +41,7 @@ same work locally: pypdf/pikepdf/pypdfium2 for the PDF internals, PySide6 for th
 desktop window, and an architecture built around one idea — **an operation is
 data, not code**. Every tool is one `@register(...)`-decorated function; the CLI,
 the GUI's tool tree, and its parameter forms are all *generated* by walking that
-registry. Adding tool #45 never means touching interface code.
+registry. Adding tool #46 never means touching interface code.
 
 ## Quick start
 
@@ -53,19 +54,22 @@ pip install -e ".[dev]"
 senpai-gui                                  # desktop window
 senpai merge a.pdf b.pdf -o ~/Desktop       # same operations from the shell
 senpai extract report.pdf --pages 1-3,7,10-
-pytest                                      # 75 tests, all green (a few skip
+senpai pipeline steps.json a.pdf -o ~/Desktop  # chain several operations in one run
+pytest                                      # 88 tests, all green (a few skip
                                              # without Ghostscript/LibreOffice/extras)
 ```
 
-Want the extra operations that need heavier optional dependencies (PDF → Excel /
-Word / PowerPoint, OCR)? `pip install -e ".[dev,extras]"` — see
+Want the extra operations that need heavier optional dependencies (writing
+real .xlsx/.docx/.pptx files, or OCR)? `pip install -e ".[dev,extras]"` — see
 [Licensing](#licensing--read-before-adding-a-dependency) for exactly what that
-pulls in and why it's kept optional.
+pulls in and why it's kept optional. (`pdfplumber` — positioned text
+extraction — is a core dependency now: both `PDF to Word` and `Redact text`
+need it, and it's light enough not to gate.)
 
 Want a Windows installer instead of running from source? See
 [Packaging](#packaging).
 
-## What it can do (44 operations)
+## What it can do (45 operations)
 
 <details>
 <summary><b>🗂️ Organise</b> (10) — merge, split, extract, remove, rotate, reverse, reorder, insert, split by count / by bookmarks</summary>
@@ -130,13 +134,14 @@ Want a Windows installer instead of running from source? See
 </details>
 
 <details>
-<summary><b>🔒 Security</b> (5) — password add/remove, permissions, metadata strip, repair</summary>
+<summary><b>🔒 Security</b> (6) — password add/remove, permissions, metadata strip, repair, redact</summary>
 
 - **Add a password** — Encrypt the document so it cannot be opened without the password.
 - **Remove a password** — Save an unencrypted copy. You need the current password to do this.
 - **Set permissions** — Restrict printing, copying, or editing without requiring a password to open.
 - **Strip metadata** — Remove author, title, producer, and XMP metadata from the document.
 - **Repair document** — Rewrite the file structure to fix damaged or non-conforming PDFs.
+- **Redact text** — Permanently remove matching text from the page, not just draw over it.
 </details>
 
 <details open>
@@ -156,18 +161,44 @@ Want a Windows installer instead of running from source? See
 - **Office documents to PDF** — Convert one or more Word, Excel, PowerPoint, or RTF files to PDF using LibreOffice.
 </details>
 
-`PDF to Excel / Word / PowerPoint` and `OCR` need the optional `extras` install
-(heavier dependencies — see [Licensing](#licensing--read-before-adding-a-dependency)).
+`PDF to Excel` and `OCR` need the optional `extras` install; `PDF to Word` and
+`PDF to PowerPoint` need it too, but only for the .docx/.pptx *writer*
+(pdfplumber's text extraction, which `PDF to Word` and `Redact text` both use,
+is a core dependency) — see [Licensing](#licensing--read-before-adding-a-dependency).
 `Compress`, `PDF/A conversion`, and `Office documents to PDF` need Ghostscript
 and/or LibreOffice installed separately (or bundled via the
 [Windows installer](#packaging)) — each detects the missing binary and raises a
 clear error rather than failing to start.
+
+## Pipelines, batch mode, and other GUI features
+
+Beyond picking one tool and running it, the desktop app has a few things that
+work across tools:
+
+- **🔗 Build a pipeline** (button above the tool list) — chain several
+  operations so one's output feeds the next, without manually re-running each
+  step. Add files, add steps in order, run. Each step runs with its
+  operation's *default* parameters in this first version — full per-step
+  parameter editing in the GUI is a natural next step, tracked in the
+  Roadmap. The underlying engine (`core/pipeline.py`) has no such limit — the
+  CLI's `senpai pipeline steps.json ...` accepts full per-step parameters via
+  its JSON spec today.
+- **Batch mode** — for any tool that normally takes exactly one file, a
+  checkbox appears letting you add several and run them independently (one
+  output per input), with a real X-of-N progress bar instead of the usual
+  indeterminate one.
+- **Recent files** (🕒 button) — the last 10 files you've added, across all
+  tools, one click to re-add.
+- **Drag-to-reorder thumbnails** — select "Reorder pages" with one PDF loaded
+  and its pages render as a draggable thumbnail strip; dragging them into the
+  order you want fills in the page-order field for you.
 
 ## How it is put together
 
 ```
 core/registry.py     Operation + Param dataclasses, the REGISTRY dict
 core/pages.py        page-range parsing ("1-3,7,10-") and output naming
+core/pipeline.py     Step dataclass + run_pipeline(), threads one op's output into the next
 core/ops/organise.py merge, split, extract, remove, rotate, reverse, reorder,
                      insert, split by count / by bookmarks
 core/ops/layout.py   crop, resize, N-up, booklet imposition
@@ -175,7 +206,7 @@ core/ops/annotate.py page numbers, text/image watermark, overlay/underlay
 core/ops/document.py metadata, bookmarks, form filling/flattening
 core/ops/attachments.py embed / extract file attachments
 core/ops/extract_content.py embedded images, plain text, XML dump
-core/ops/security.py password add/remove, permissions, metadata strip, repair
+core/ops/security.py password add/remove, permissions, metadata strip, repair, redact
 core/ops/images.py   PDF<->image, grayscale, text-to-PDF, PDF-to-web (pypdfium2 + Pillow)
 core/ops/convert.py  compress, PDF/A, OCR, Office/RTF->PDF (Ghostscript/LibreOffice/Tesseract)
 core/ops/tables.py   PDF to Excel via real table detection (camelot-py, `extras`)
@@ -183,15 +214,16 @@ core/ops/word.py     PDF to Word via positioned text (pdfplumber + python-docx, 
 core/ops/slides.py   PDF to PowerPoint via one image per slide (python-pptx, `extras`)
 core/ops/_draw.py    shared content-stream helpers (not an operation module)
 core/ops/_binaries.py external-binary detection helper (not an operation module)
-cli.py               argparse built by walking the registry
-gui/app.py           PySide6 window; tool tree and forms built by walking the registry
+core/ops/_pdfminer_fix.py workaround for a pdfminer.six/ocrmypdf interaction bug (not an operation module)
+cli.py               argparse built by walking the registry; `pipeline` is the one hand-written subcommand
+gui/app.py           PySide6 window; tool tree, forms, pipeline dialog, and batch mode all built by walking the registry
 ```
 
 The registry is the whole design. Operations are declared as **data** — id, label,
 category, parameter list with types — and both front ends are generated from that
 description. Neither `cli.py` nor `gui/app.py` mentions a single operation by name,
 so the interface code stops growing once it is written. Getting from 10 operations
-to 44 was then a matter of writing 34 small functions, which is a task you can hand
+to 45 was then a matter of writing 35 small functions, which is a task you can hand
 to contributors.
 
 ## Adding an operation
@@ -230,6 +262,7 @@ permissive, and PDF tooling is unusually full of copyleft traps:
 | Pillow | HPND (permissive) | Yes — image decode/encode for stamps and image ops |
 | cryptography | Apache-2.0 / BSD-3 | Yes — AES support for pypdf's reader |
 | PySide6 | LGPL-3 | Yes — link dynamically, ship the licence text |
+| pdfplumber / pdfminer.six | MIT | Yes — core dependency; positioned text for `PDF to Word` and `Redact text` |
 | PyMuPDF | AGPL-3 | **No** — it relicenses the whole project the moment it is imported |
 | Ghostscript | AGPL-3 | Subprocess only, optional install (compress, PDF/A) |
 | Tesseract / OCRmyPDF | Apache / MPL, GPL tools | `extras` group + subprocess, optional install |
@@ -238,7 +271,6 @@ permissive, and PDF tooling is unusually full of copyleft traps:
 | openpyxl | MIT | Yes — `extras` group, writes the actual .xlsx |
 | pandas / numpy | BSD-3 | Yes — `extras` group, camelot-py's own table-data dependencies |
 | opencv-python-headless / playa-pdf | Apache-2.0 / MIT | Yes — `extras` group, camelot-py's own PDF/image dependencies |
-| pdfplumber | MIT | Yes — `extras` group, positioned text for PDF to Word |
 | python-docx / python-pptx | MIT | Yes — `extras` group, write the actual .docx / .pptx |
 | xlsxwriter / lxml | BSD-2 / BSD-3 | Yes — `extras` group, python-pptx's own dependencies |
 
@@ -246,8 +278,9 @@ The rule: anything in `dependencies` must be permissive. AGPL and GPL tools are
 allowed only as **separate processes** the user installs themselves, behind the
 `extras` group, with the feature disabled and clearly labelled when absent.
 
-Ship `LICENSE`, plus a `THIRD-PARTY-NOTICES.md` listing each dependency and its
-licence. Add a `NOTICE` file if you accept contributions from employers.
+See `LICENSE` (Apache-2.0) and `THIRD-PARTY-NOTICES.md` (every dependency
+above, with links) for the full text. `CONTRIBUTING.md` has the practical
+version of this section plus the testing/PR conventions.
 
 ## Packaging
 
@@ -283,24 +316,44 @@ system PATH so the bundled operations work immediately. The third-party
 installers themselves aren't committed to this repo (~460 MB, see
 `.gitignore`) — `packaging/installer.iss` documents where to fetch them.
 
+`.github/workflows/build.yml` builds the PyInstaller package on Windows,
+macOS, and Linux runners on every push, and uploads each as an artifact.
+Written against PyInstaller's documented CLI and PySide6's known Linux
+runtime dependencies, but not yet exercised against a real Actions run in
+this repo — the first push is the first time it actually runs.
+
 ## Roadmap
 
-**Not yet implemented, in order of value per hour of work:**
-
-1. Drag-to-reorder page thumbnails in the GUI — the feature people actually miss
-   (needs `pdf_to_image` under the hood, which now exists — this is pure GUI work)
-2. Pipelines — chain operations; the registry already makes this nearly free
-3. Batch mode, progress bars for long jobs, recent files list
-4. Packaged builds (Win/Mac/Linux) in CI
-5. THIRD-PARTY-NOTICES.md, CONTRIBUTING.md + issue templates
-6. Real redaction — remove the content stream, not draw a black rectangle. Get
-   this wrong and users leak the data they were trying to hide. Write the tests
-   first.
+Everything that was tracked here as "not yet implemented" now ships:
+drag-to-reorder thumbnails, the pipeline engine (CLI + GUI), batch mode,
+determinate progress bars, a recent-files list, CI packaged builds, the
+contributor docs below, and real redaction — see
+[Pipelines, batch mode, and other GUI features](#pipelines-batch-mode-and-other-gui-features)
+above and `core/ops/security.py`'s `redact` for the last one.
 
 **Deliberately deferred:** PDF → RTF, in-place text editing, cryptographic
 signatures, document comparison, authoring brand-new form fields. LibreOffice's
 own PDF import filter is too lossy to wire up as a PDF → RTF shortcut without
 misleading users about what they'll get back.
+
+**Real redaction, in more detail:** `redact` searches for a text match (via
+pdfplumber) and, on any page where it's found, rasterizes the *whole page* to
+an image with the matched region painted over, discarding that page's
+original content stream entirely — `extract_text()` on a redacted page
+returns nothing, not the hidden-under-a-box text a naive "draw a black
+rectangle" approach would leave recoverable. The trade-off is coarse
+granularity: a page containing the match loses text-selectability entirely,
+not just in the redacted region (the same rasterize-for-guarantee trade-off
+`grayscale` already makes in this codebase) — pages without a match are
+untouched. Region-level (rather than whole-page) redaction would need a
+content-stream interpreter tracking exactly what draws where, which risks
+missing hidden/clipped/invisible content sharing that space; not attempted
+here for that reason.
+
+**Known limitation:** the GUI's pipeline builder runs each step with its
+operation's default parameters (no per-step parameter form yet) — the CLI's
+`senpai pipeline` accepts full per-step parameters via its JSON spec today,
+so this is a GUI-only gap, tracked as follow-up work.
 
 **PDF → Word / PowerPoint / Excel — three different honesty levels, on purpose:**
 - `PDF to Excel` (`core/ops/tables.py`, camelot-py) is the one that came out

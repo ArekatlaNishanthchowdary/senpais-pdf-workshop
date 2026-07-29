@@ -2,16 +2,19 @@
 round-trip. Good for text-heavy documents -- headings are guessed from line
 height relative to the body-text height. Multi-column layouts, rotated text,
 and graphic-heavy pages will still degrade; this reconstructs a reading order,
-not a pixel-perfect clone. Kept out of the default install like OCR/tables --
-see the `extras` group in pyproject.toml.
+not a pixel-perfect clone. python-docx (the .docx writer) is kept out of the
+default install, like OCR/tables -- see the `extras` group in pyproject.toml.
+pdfplumber itself is a core dependency (also used by `redact`).
 """
 
 from __future__ import annotations
 
-import importlib
 from collections import Counter
 from pathlib import Path
 
+import pdfplumber
+
+from ._pdfminer_fix import reset_pdfminer_font_cache
 from ..pages import output_path
 from ..registry import register
 
@@ -24,23 +27,13 @@ from ..registry import register
 )
 def pdf_to_word(sources: list[Path], out_dir: Path) -> list[Path]:
     try:
-        import pdfplumber
         from docx import Document
     except ImportError as exc:
         raise ValueError(
             'PDF to Word needs the extras install: pip install "senpais-pdf-workshop[extras]".'
         ) from exc
 
-    # ponytail: pdfminer.six's standard-14 font metrics table (pdfminer.pdffont
-    # .FONT_METRICS) can get corrupted by ocrmypdf's own pdfminer usage running
-    # earlier in this same process -- every "Helvetica" font afterward silently
-    # decodes to "(cid:N)" placeholders instead of real characters, no error
-    # raised. Reloading the module resets that table; ceiling: if a future
-    # pdfminer.six version keys this differently, this stops helping and needs
-    # re-diagnosing rather than blindly kept around.
-    import pdfminer.pdffont
-
-    importlib.reload(pdfminer.pdffont)
+    reset_pdfminer_font_cache()
 
     src = sources[0]
     with pdfplumber.open(str(src)) as pdf:
