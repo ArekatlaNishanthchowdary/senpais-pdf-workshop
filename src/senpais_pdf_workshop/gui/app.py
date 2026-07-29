@@ -43,7 +43,7 @@ from ..core.registry import REGISTRY, InputSlot, Operation, Param, categories, l
 # ponytail: __file__ points inside PyInstaller's PYZ archive when frozen, not a
 # real path on disk -- sys._MEIPASS is the actual extracted bundle root there.
 _ASSETS_DIR = (
-    Path(sys._MEIPASS) / "quire" / "gui" / "assets"
+    Path(sys._MEIPASS) / "senpais_pdf_workshop" / "gui" / "assets"
     if getattr(sys, "frozen", False)
     else Path(__file__).parent / "assets"
 )

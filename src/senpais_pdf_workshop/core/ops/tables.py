@@ -34,7 +34,7 @@ def pdf_to_excel(sources: list[Path], out_dir: Path, pages: str = "all") -> list
         import openpyxl
     except ImportError as exc:
         raise ValueError(
-            'PDF to Excel needs the extras install: pip install "quire[extras]".'
+            'PDF to Excel needs the extras install: pip install "senpais-pdf-workshop[extras]".'
         ) from exc
 
     src = sources[0]

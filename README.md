@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src/quire/gui/assets/icon.png" width="120" alt="Senpai's Pdf Workshop icon">
+<img src="src/senpais_pdf_workshop/gui/assets/icon.png" width="120" alt="Senpai's Pdf Workshop icon">
 
 # Senpai's Pdf Workshop
 
@@ -42,10 +42,6 @@ data, not code**. Every tool is one `@register(...)`-decorated function; the CLI
 the GUI's tool tree, and its parameter forms are all *generated* by walking that
 registry. Adding tool #45 never means touching interface code.
 
-> The Python package, CLI (`quire`), and GUI script (`quire-gui`) keep the
-> `quire` name internally — `Senpai's Pdf Workshop` is the product's display
-> name.
-
 ## Quick start
 
 ```bash
@@ -54,9 +50,9 @@ cd senpais-pdf-workshop
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-quire-gui                                   # desktop window
-quire merge a.pdf b.pdf -o ~/Desktop        # same operations from the shell
-quire extract report.pdf --pages 1-3,7,10-
+senpai-gui                                  # desktop window
+senpai merge a.pdf b.pdf -o ~/Desktop       # same operations from the shell
+senpai extract report.pdf --pages 1-3,7,10-
 pytest                                      # 75 tests, all green (a few skip
                                              # without Ghostscript/LibreOffice/extras)
 ```
@@ -262,9 +258,9 @@ one `.exe`.
 ```bash
 pip install pyinstaller
 pyinstaller --windowed --name "SenpaisPdfWorkshop" \
-  --icon src/quire/gui/assets/icon.ico \
-  --add-data "src/quire/gui/assets;quire/gui/assets" \
-  --collect-submodules quire.core.ops \
+  --icon src/senpais_pdf_workshop/gui/assets/icon.ico \
+  --add-data "src/senpais_pdf_workshop/gui/assets;senpais_pdf_workshop/gui/assets" \
+  --collect-submodules senpais_pdf_workshop.core.ops \
   packaging/run_gui.py
 ```
 
@@ -274,8 +270,8 @@ Two things that are easy to get wrong here, both already handled:
   as a script — `packaging/run_gui.py` is a proper entry point instead.
 - `load_operations()` discovers every `core/ops/*.py` module *dynamically* at
   runtime (`pkgutil.iter_modules`) — that's invisible to PyInstaller's static
-  analysis, so without `--collect-submodules quire.core.ops` the frozen app
-  silently ships with an empty registry (0 tools, not a crash).
+  analysis, so without `--collect-submodules senpais_pdf_workshop.core.ops`
+  the frozen app silently ships with an empty registry (0 tools, not a crash).
 
 `packaging/installer.iss` (compile with
 [Inno Setup](https://jrsoftware.org/isinfo.php)'s `ISCC.exe`) wraps the
@@ -323,7 +319,7 @@ Note on `compress`, `pdf_to_pdfa`, and `office_to_pdf`: they shell out to
 Ghostscript / LibreOffice, which this project does not bundle by default. Each
 detects a missing binary and raises a clear error rather than failing to
 import — see `core/ops/_binaries.py`. `ocr` needs the `extras` install (`pip
-install "quire[extras]"`) plus a Tesseract ≥ 4.1.1 install on PATH.
+install "senpais-pdf-workshop[extras]"`) plus a Tesseract ≥ 4.1.1 install on PATH.
 `office_to_pdf` takes a batch of mixed file types in one run (a `.docx` and a
 `.pptx` together, say) — each is converted independently and de-duplicated by
 name, so two source files that happen to share a stem never overwrite each

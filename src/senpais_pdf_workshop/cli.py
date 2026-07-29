@@ -15,7 +15,7 @@ from .core.registry import REGISTRY, categories, load_operations
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="quire", description="Local PDF tools. Nothing leaves your machine."
+        prog="senpai", description="Local PDF tools. Nothing leaves your machine."
     )
     subs = parser.add_subparsers(dest="operation", metavar="OPERATION")
 
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         written = op.run([Path(s) for s in args.sources], Path(args.out), **values)
     except Exception as exc:  # surfaced to the user, not a traceback
-        print(f"quire: {exc}", file=sys.stderr)
+        print(f"senpai: {exc}", file=sys.stderr)
         return 2
 
     for path in written:

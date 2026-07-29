@@ -1,5 +1,5 @@
 """Operations that shell out to optional external tools: Ghostscript, LibreOffice,
-OCRmyPDF/Tesseract. None of these are installed by `pip install quire` -- they're
+OCRmyPDF/Tesseract. None of these are installed by `pip install senpais-pdf-workshop` -- they're
 separate programs the user installs, and each operation checks for its binary
 and raises a clear, actionable error instead of failing to import.
 """
@@ -155,7 +155,7 @@ def ocr(sources: list[Path], out_dir: Path, language: str = "eng", force: bool =
         import ocrmypdf
     except ImportError as exc:
         raise ValueError(
-            'OCR needs the extras install: pip install "quire[extras]", '
+            'OCR needs the extras install: pip install "senpais-pdf-workshop[extras]", '
             "plus Tesseract installed and on PATH."
         ) from exc
     src = sources[0]

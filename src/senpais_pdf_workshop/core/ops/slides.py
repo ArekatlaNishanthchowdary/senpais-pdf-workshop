@@ -31,7 +31,7 @@ def pdf_to_ppt(sources: list[Path], out_dir: Path, dpi: int = 150) -> list[Path]
         from pptx.util import Emu
     except ImportError as exc:
         raise ValueError(
-            'PDF to PowerPoint needs the extras install: pip install "quire[extras]".'
+            'PDF to PowerPoint needs the extras install: pip install "senpais-pdf-workshop[extras]".'
         ) from exc
 
     src = sources[0]

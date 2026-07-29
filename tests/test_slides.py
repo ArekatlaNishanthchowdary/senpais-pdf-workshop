@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfWriter
 
-from quire.core.registry import REGISTRY, load_operations
+from senpais_pdf_workshop.core.registry import REGISTRY, load_operations
 
 load_operations()
 

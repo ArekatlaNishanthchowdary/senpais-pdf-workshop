@@ -28,7 +28,7 @@ def pdf_to_word(sources: list[Path], out_dir: Path) -> list[Path]:
         from docx import Document
     except ImportError as exc:
         raise ValueError(
-            'PDF to Word needs the extras install: pip install "quire[extras]".'
+            'PDF to Word needs the extras install: pip install "senpais-pdf-workshop[extras]".'
         ) from exc
 
     # ponytail: pdfminer.six's standard-14 font metrics table (pdfminer.pdffont

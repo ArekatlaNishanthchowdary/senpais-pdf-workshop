@@ -14,7 +14,7 @@ from openpyxl import load_workbook
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from quire.core.registry import REGISTRY, load_operations
+from senpais_pdf_workshop.core.registry import REGISTRY, load_operations
 
 load_operations()
 
