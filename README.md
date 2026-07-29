@@ -192,6 +192,14 @@ work across tools:
 - **Drag-to-reorder thumbnails** — select "Reorder pages" with one PDF loaded
   and its pages render as a draggable thumbnail strip; dragging them into the
   order you want fills in the page-order field for you.
+- **🌙/☀️ Dark and light themes** — button next to the search box, switches
+  instantly and remembers your choice.
+- **👁️ PDF viewer** — "View a PDF…" opens any file, and a "View result"
+  button appears after a run that produced a PDF. Opens in its own window
+  with page navigation, zoom, and two basic edit actions — Rotate page and
+  Delete page — both of which call the same `rotate`/`remove` operations
+  used everywhere else in the app and write a new file (the original is
+  never touched), then reload the viewer onto that new file.
 
 ## How it is put together
 

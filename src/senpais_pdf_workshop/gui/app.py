@@ -8,11 +8,12 @@ keep the window responsive on large documents.
 from __future__ import annotations
 
 import html
+import shutil
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QSize, QUrl, Qt, QThread, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -30,12 +32,15 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QStatusBar,
     QTextBrowser,
+    QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -54,44 +59,85 @@ _ASSETS_DIR = (
 )
 APP_ICON_PATH = _ASSETS_DIR / "icon.png"
 
-# ponytail: one flat light theme via QSS, not a full theming system --
-# add prefers-color-scheme-style dark variant if users actually ask for it.
-STYLE_SHEET = """
-QMainWindow, QWidget { background: #f5f6fb; font-size: 13px; color: #1f2430; }
-QTreeWidget, QListWidget {
-    background: #ffffff; border: 1px solid #e3e5ef; border-radius: 8px;
+# Light and dark share one template; only the color tokens change. Keeps the
+# two themes from drifting apart the way two independent stylesheets would.
+_PALETTES = {
+    "light": dict(
+        bg="#f5f6fb", surface="#ffffff", border="#e2e4ef", text="#1f2430",
+        muted="#6b7280", hover="#f0f1fb", pressed="#e6e8fc", selected_bg="#eef0ff",
+        selected_text="#3730a3", accent="#4f46e5", accent_hover="#4338ca",
+        accent_disabled="#c7c9f5", accent_text_disabled="#f0f0ff",
+        disabled_text="#a1a5b7", disabled_bg="#f5f6fb", card_title="#4b4f66",
+        progress_bg="#eef0ff", scrollbar="#d9dbe8", scrollbar_hover="#c3c6db",
+        shadow="rgba(31, 36, 48, 45)",
+    ),
+    "dark": dict(
+        bg="#12141c", surface="#1b1e29", border="#2b2f40", text="#e7e9f3",
+        muted="#9aa0b8", hover="#232838", pressed="#2b3148", selected_bg="#2a2f57",
+        selected_text="#c2c6ff", accent="#7477f5", accent_hover="#8b8dff",
+        accent_disabled="#383c66", accent_text_disabled="#7d81a8",
+        disabled_text="#5a5f78", disabled_bg="#1b1e29", card_title="#b7bcdb",
+        progress_bg="#232842", scrollbar="#363c52", scrollbar_hover="#454c68",
+        shadow="rgba(0, 0, 0, 130)",
+    ),
+}
+
+
+def build_stylesheet(dark: bool) -> str:
+    """One QSS template shared by both themes -- see _PALETTES for the tokens."""
+    c = _PALETTES["dark" if dark else "light"]
+    return f"""
+QMainWindow, QWidget {{ background: {c['bg']}; font-size: 13px; color: {c['text']}; }}
+QTreeWidget, QListWidget {{
+    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 10px;
     padding: 4px; outline: none;
-}
-QTreeWidget::item, QListWidget::item { padding: 6px 4px; border-radius: 6px; }
-QTreeWidget::item:selected, QListWidget::item:selected { background: #eef0ff; color: #3730a3; }
-QTreeWidget::item:hover:!selected, QListWidget::item:hover:!selected { background: #f3f4fb; }
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-    background: #ffffff; border: 1px solid #d9dbe8; border-radius: 6px; padding: 5px 8px;
-}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid #6366f1; }
-QPushButton {
-    background: #ffffff; border: 1px solid #d9dbe8; border-radius: 6px; padding: 6px 14px;
-}
-QPushButton:hover { background: #f3f4fb; }
-QPushButton:pressed { background: #e9eafc; }
-QPushButton:disabled { color: #a1a5b7; background: #f5f6fb; }
-QPushButton#runButton {
-    background: #4f46e5; color: white; font-weight: 600; border: none;
-    padding: 10px 18px; font-size: 14px;
-}
-QPushButton#runButton:hover { background: #4338ca; }
-QPushButton#runButton:disabled { background: #c7c9f5; color: #f0f0ff; }
-QPushButton#linkButton {
-    background: transparent; border: none; color: #4f46e5; padding: 2px; text-align: left;
-}
-QPushButton#linkButton:hover { color: #4338ca; text-decoration: underline; }
-QFrame#card { background: #ffffff; border: 1px solid #e3e5ef; border-radius: 10px; }
-QLabel#cardTitle { font-weight: 600; color: #4b4f66; }
-QTextBrowser#guide { background: #ffffff; border: 1px solid #e3e5ef; border-radius: 10px; padding: 6px; }
-QProgressBar { background: #eef0ff; border: none; border-radius: 3px; }
-QProgressBar::chunk { background: #6366f1; border-radius: 3px; }
-QStatusBar { background: #f5f6fb; }
-QSplitter::handle { background: #f5f6fb; width: 8px; }
+}}
+QTreeWidget::item, QListWidget::item {{ padding: 7px 5px; border-radius: 6px; }}
+QTreeWidget::item:selected, QListWidget::item:selected {{ background: {c['selected_bg']}; color: {c['selected_text']}; }}
+QTreeWidget::item:hover:!selected, QListWidget::item:hover:!selected {{ background: {c['hover']}; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 6px 9px;
+    selection-background-color: {c['selected_bg']};
+}}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {c['accent']}; }}
+QPushButton {{
+    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 6px 14px;
+}}
+QPushButton:hover {{ background: {c['hover']}; }}
+QPushButton:pressed {{ background: {c['pressed']}; }}
+QPushButton:disabled {{ color: {c['disabled_text']}; background: {c['disabled_bg']}; }}
+QPushButton#runButton {{
+    background: {c['accent']}; color: white; font-weight: 600; border: none;
+    padding: 11px 18px; font-size: 14px;
+}}
+QPushButton#runButton:hover {{ background: {c['accent_hover']}; }}
+QPushButton#runButton:disabled {{ background: {c['accent_disabled']}; color: {c['accent_text_disabled']}; }}
+QPushButton#linkButton {{
+    background: transparent; border: none; color: {c['accent']}; padding: 2px; text-align: left;
+}}
+QPushButton#linkButton:hover {{ color: {c['accent_hover']}; text-decoration: underline; }}
+QPushButton#themeButton, QPushButton#viewButton {{
+    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 6px 10px;
+}}
+QFrame#card {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+QLabel#cardTitle {{ font-weight: 600; color: {c['card_title']}; letter-spacing: 0.2px; }}
+QTextBrowser#guide {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; padding: 8px; }}
+QProgressBar {{ background: {c['progress_bg']}; border: none; border-radius: 3px; }}
+QProgressBar::chunk {{ background: {c['accent']}; border-radius: 3px; }}
+QStatusBar {{ background: {c['bg']}; color: {c['muted']}; }}
+QSplitter::handle {{ background: {c['bg']}; width: 8px; }}
+QMenu {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 8px; padding: 4px; color: {c['text']}; }}
+QMenu::item {{ padding: 6px 12px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {c['selected_bg']}; color: {c['selected_text']}; }}
+QToolBar {{ background: {c['surface']}; border: none; border-bottom: 1px solid {c['border']}; spacing: 4px; padding: 4px; }}
+QScrollBar:vertical {{ background: transparent; width: 12px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {c['scrollbar']}; border-radius: 5px; min-height: 24px; }}
+QScrollBar::handle:vertical:hover {{ background: {c['scrollbar_hover']}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 12px; margin: 0; }}
+QScrollBar::handle:horizontal {{ background: {c['scrollbar']}; border-radius: 5px; min-width: 24px; }}
+QScrollBar::handle:horizontal:hover {{ background: {c['scrollbar_hover']}; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 """
 
 CATEGORY_ICONS = {
@@ -315,6 +361,11 @@ def _clear_layout(layout) -> None:
 def _card(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("card")
+    shadow = QGraphicsDropShadowEffect(frame)
+    shadow.setBlurRadius(18)
+    shadow.setOffset(0, 2)
+    shadow.setColor(QColor(0, 0, 0, 40))
+    frame.setGraphicsEffect(shadow)
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(16, 14, 16, 14)
     layout.setSpacing(8)
@@ -470,6 +521,188 @@ class PipelineDialog(QDialog):
         self.run_button.setEnabled(True)
 
 
+class PdfViewerWindow(QMainWindow):
+    """A small, self-contained PDF viewer in its own window.
+
+    Renders pages with pypdfium2 (already a core dependency for every other
+    render/rasterize op in this app; Qt's own PDF viewer module isn't part of
+    the PySide6-Essentials package installed here, so this avoids a new
+    dependency). Rotate/Delete call straight into the `rotate`/`remove`
+    operations already registered elsewhere in the app and write a new file
+    -- same "operations never mutate in place" rule as everywhere else here
+    -- then reload the viewer onto that new file.
+
+    ponytail: renders synchronously on the UI thread rather than via a worker
+    thread -- a single-page render at typical zoom is fast enough (well under
+    the point a user would notice) that the thread-per-navigation overhead
+    isn't worth it here, unlike the thumbnail strip which renders many pages
+    at once. Revisit if very large/complex pages make navigation feel laggy.
+    """
+
+    def __init__(self, path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._path = path
+        self._page_index = 0
+        self._page_count = 0
+        self._zoom = 1.5  # pypdfium2 scale factor; 1.0 == 72 DPI
+
+        self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+        self.resize(900, 1000)
+
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        prev_action = QAction("◀ Prev", self)
+        prev_action.triggered.connect(self._prev_page)
+        toolbar.addAction(prev_action)
+
+        self.page_spin = QSpinBox()
+        self.page_spin.setMinimum(1)
+        self.page_spin.valueChanged.connect(self._go_to_page)
+        toolbar.addWidget(self.page_spin)
+
+        self.page_count_label = QLabel("of 1")
+        toolbar.addWidget(self.page_count_label)
+
+        next_action = QAction("Next ▶", self)
+        next_action.triggered.connect(self._next_page)
+        toolbar.addAction(next_action)
+
+        toolbar.addSeparator()
+
+        zoom_out = QAction("🔍−", self)
+        zoom_out.triggered.connect(lambda: self._set_zoom(self._zoom / 1.25))
+        toolbar.addAction(zoom_out)
+        zoom_in = QAction("🔍+", self)
+        zoom_in.triggered.connect(lambda: self._set_zoom(self._zoom * 1.25))
+        toolbar.addAction(zoom_in)
+
+        toolbar.addSeparator()
+
+        rotate_action = QAction("⟳ Rotate page", self)
+        rotate_action.triggered.connect(self._rotate_current_page)
+        toolbar.addAction(rotate_action)
+
+        delete_action = QAction("🗑 Delete page", self)
+        delete_action.triggered.connect(self._delete_current_page)
+        toolbar.addAction(delete_action)
+
+        toolbar.addSeparator()
+
+        save_copy_action = QAction("💾 Save a copy…", self)
+        save_copy_action.triggered.connect(self._save_copy)
+        toolbar.addAction(save_copy_action)
+
+        open_external_action = QAction("↗ Open externally", self)
+        open_external_action.triggered.connect(self._open_externally)
+        toolbar.addAction(open_external_action)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label = QLabel()
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_area.setWidget(self.page_label)
+        self.setCentralWidget(self.scroll_area)
+
+        self.setStatusBar(QStatusBar())
+        self._load(path)
+
+    def _load(self, path: Path) -> None:
+        try:
+            import pypdfium2 as pdfium
+
+            page_count = len(pdfium.PdfDocument(str(path)))
+        except Exception as exc:
+            QMessageBox.critical(self, "Couldn't open PDF", str(exc))
+            self.close()
+            return
+        self._path = path
+        self._page_count = page_count
+        self.setWindowTitle(path.name)
+        self.page_spin.blockSignals(True)
+        self.page_spin.setMaximum(max(page_count, 1))
+        self.page_spin.setValue(1)
+        self.page_spin.blockSignals(False)
+        self.page_count_label.setText(f"of {page_count}")
+        self._page_index = 0
+        self._render_current_page()
+
+    def _render_current_page(self) -> None:
+        try:
+            import pypdfium2 as pdfium
+
+            pdf = pdfium.PdfDocument(str(self._path))
+            image = pdf[self._page_index].render(scale=self._zoom).to_pil().convert("RGB")
+        except Exception as exc:
+            self.statusBar().showMessage(f"⚠️  Couldn't render page: {exc}")
+            return
+        qimage = QImage(
+            image.tobytes(), image.width, image.height, image.width * 3, QImage.Format.Format_RGB888
+        )
+        self.page_label.setPixmap(QPixmap.fromImage(qimage))
+        self.page_label.adjustSize()
+        self.statusBar().showMessage(f"Page {self._page_index + 1} of {self._page_count}")
+
+    def _go_to_page(self, page_number: int) -> None:
+        self._page_index = page_number - 1
+        self._render_current_page()
+
+    def _prev_page(self) -> None:
+        if self._page_index > 0:
+            self.page_spin.setValue(self._page_index)
+
+    def _next_page(self) -> None:
+        if self._page_index < self._page_count - 1:
+            self.page_spin.setValue(self._page_index + 2)
+
+    def _set_zoom(self, zoom: float) -> None:
+        self._zoom = max(0.25, min(zoom, 6.0))
+        self._render_current_page()
+
+    def _rotate_current_page(self) -> None:
+        self._apply_edit(
+            "rotate", {"angle": "90", "pages": str(self._page_index + 1)}, "Rotated page"
+        )
+
+    def _delete_current_page(self) -> None:
+        if self._page_count <= 1:
+            self.statusBar().showMessage("⚠️  Can't delete the only page.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete page",
+            f"Delete page {self._page_index + 1}? This writes a new file --"
+            " the original is left untouched.",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_edit("remove", {"pages": str(self._page_index + 1)}, "Deleted page")
+
+    def _apply_edit(self, op_id: str, params: dict, verb: str) -> None:
+        try:
+            written = REGISTRY[op_id].run([self._path], self._path.parent, **params)
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't apply edit", str(exc))
+            return
+        new_path = written[0]
+        self._load(new_path)
+        self.statusBar().showMessage(f"✅ {verb} — saved as {new_path.name}")
+
+    def _save_copy(self) -> None:
+        suggested = self._path.with_stem(self._path.stem + "-copy")
+        target, _ = QFileDialog.getSaveFileName(
+            self, "Save a copy", str(suggested), "PDF files (*.pdf)"
+        )
+        if target:
+            shutil.copyfile(self._path, target)
+            self.statusBar().showMessage(f"Saved a copy to {target}")
+
+    def _open_externally(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._path)))
+
+
 class Window(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -482,11 +715,13 @@ class Window(QMainWindow):
         self._op: Operation | None = None
         self._thread: QThread | None = None
         self._last_output_dir: Path | None = None
+        self._last_result_pdf: Path | None = None
         self._slots: tuple[InputSlot, ...] = ()
         self._slot_lists: dict[str, FileDropList] = {}
         self._slot_sources: dict[str, list[Path]] = {}
         self._thumb_thread: QThread | None = None
         self._settings = QSettings("SenpaisPdfWorkshop", "SenpaisPdfWorkshop")
+        self._viewers: list[PdfViewerWindow] = []
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_tool_list())
@@ -505,14 +740,28 @@ class Window(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        top_row = QHBoxLayout()
         search = QLineEdit()
         search.setPlaceholderText("🔍  Search tools…")
         search.textChanged.connect(self._filter_tools)
-        layout.addWidget(search)
+        top_row.addWidget(search, stretch=1)
+        self.theme_button = QPushButton()
+        self.theme_button.setObjectName("themeButton")
+        self.theme_button.setFixedWidth(40)
+        self.theme_button.setToolTip("Switch between light and dark")
+        self.theme_button.clicked.connect(self._toggle_theme)
+        top_row.addWidget(self.theme_button)
+        layout.addLayout(top_row)
+        self._update_theme_button()
 
-        pipeline_button = QPushButton("🔗 Build a pipeline…")
+        actions_row = QHBoxLayout()
+        pipeline_button = QPushButton("🔗 Pipeline…")
         pipeline_button.clicked.connect(self._open_pipeline_dialog)
-        layout.addWidget(pipeline_button)
+        actions_row.addWidget(pipeline_button)
+        view_button = QPushButton("👁️ View a PDF…")
+        view_button.clicked.connect(self._open_viewer_dialog)
+        actions_row.addWidget(view_button)
+        layout.addLayout(actions_row)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
@@ -537,6 +786,31 @@ class Window(QMainWindow):
 
     def _open_pipeline_dialog(self) -> None:
         PipelineDialog(self).exec()
+
+    def _open_viewer_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "View a PDF", "", "PDF files (*.pdf)")
+        if path:
+            self._open_viewer(Path(path))
+
+    def _open_viewer(self, path: Path) -> None:
+        viewer = PdfViewerWindow(path, self)
+        viewer.show()
+        self._viewers.append(viewer)
+
+    def _is_dark(self) -> bool:
+        return bool(self._settings.value("darkMode", False, type=bool))
+
+    def _update_theme_button(self) -> None:
+        dark = self._is_dark()
+        self.theme_button.setText("☀️" if dark else "🌙")
+
+    def _toggle_theme(self) -> None:
+        dark = not self._is_dark()
+        self._settings.setValue("darkMode", dark)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_stylesheet(dark))
+        self._update_theme_button()
 
     def _filter_tools(self, text: str) -> None:
         needle = text.strip().lower()
@@ -653,6 +927,11 @@ class Window(QMainWindow):
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self._run)
         run_row.addWidget(self.run_button, stretch=1)
+        self.view_result_button = QPushButton("👁️ View result")
+        self.view_result_button.setObjectName("viewButton")
+        self.view_result_button.setVisible(False)
+        self.view_result_button.clicked.connect(self._view_last_result)
+        run_row.addWidget(self.view_result_button)
         self.open_folder_button = QPushButton("Open output folder ↗")
         self.open_folder_button.setObjectName("linkButton")
         self.open_folder_button.setVisible(False)
@@ -675,6 +954,7 @@ class Window(QMainWindow):
         self.summary.setText(self._op.summary)
         self.run_button.setText(f"▶  {self._op.label}")
         self.open_folder_button.setVisible(False)
+        self.view_result_button.setVisible(False)
 
         synthetic = not self._op.input_slots
         self._slots = self._op.input_slots or (
@@ -808,6 +1088,7 @@ class Window(QMainWindow):
         values = {name: read_field(w) for name, w in self._fields.items()}
         self.run_button.setEnabled(False)
         self.open_folder_button.setVisible(False)
+        self.view_result_button.setVisible(False)
         self.progress.setVisible(True)
         self.statusBar().showMessage(f"Running {self._op.label}…")
 
@@ -845,9 +1126,15 @@ class Window(QMainWindow):
         where = written[0].parent if written else self._out_dir
         self._last_output_dir = where
         self.open_folder_button.setVisible(True)
+        self._last_result_pdf = next((p for p in written if p.suffix.lower() == ".pdf"), None)
+        self.view_result_button.setVisible(self._last_result_pdf is not None)
         self.statusBar().showMessage(
             f"✅ Wrote {count} file{'s' if count != 1 else ''} to {where}"
         )
+
+    def _view_last_result(self) -> None:
+        if self._last_result_pdf is not None:
+            self._open_viewer(self._last_result_pdf)
 
     def _on_failed(self, message: str) -> None:
         self._finish()
@@ -949,7 +1236,8 @@ class Window(QMainWindow):
 def main() -> int:
     load_operations()
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLE_SHEET)
+    settings = QSettings("SenpaisPdfWorkshop", "SenpaisPdfWorkshop")
+    app.setStyleSheet(build_stylesheet(dark=settings.value("darkMode", False, type=bool)))
     app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     window = Window()
     window.show()
