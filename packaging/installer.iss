@@ -51,6 +51,18 @@ Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
+[Registry]
+; Adds the app to the "Open with" list for .pdf files -- additive only,
+; does NOT make it the default PDF handler (that would need HKCR\.pdf
+; itself, a bigger and more surprising change than "show up as an option").
+; The whole Applications\<exe> key (and everything under it) is removed on
+; uninstall via uninsdeletekey.
+Root: HKCR; Subkey: "Applications\{#AppExeName}"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "Applications\{#AppExeName}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"
+Root: HKCR; Subkey: "Applications\{#AppExeName}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
+Root: HKCR; Subkey: "Applications\{#AppExeName}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+Root: HKCR; Subkey: "Applications\{#AppExeName}\SupportedTypes"; ValueType: string; ValueName: ".pdf"; ValueData: ""
+
 [Run]
 ; extract bundled installers to temp only when actually needed (dontcopy above
 ; means they're not pre-extracted; ExtractTemporaryFile pulls each one out

@@ -1233,6 +1233,20 @@ class Window(QMainWindow):
         field.setText(order)
 
 
+def pdf_from_args(argv: list[str]) -> Path | None:
+    """The first existing .pdf path among CLI args, if any.
+
+    Windows' "Open with" launches the app as `SenpaisPdfWorkshop.exe "the
+    file.pdf"` -- this is what notices that and hands it to the viewer.
+    A pure function (no Qt) so it's testable without a QApplication.
+    """
+    for arg in argv:
+        candidate = Path(arg)
+        if candidate.suffix.lower() == ".pdf" and candidate.exists():
+            return candidate
+    return None
+
+
 def main() -> int:
     load_operations()
     app = QApplication(sys.argv)
@@ -1241,6 +1255,9 @@ def main() -> int:
     app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     window = Window()
     window.show()
+    pdf_arg = pdf_from_args(sys.argv[1:])
+    if pdf_arg is not None:
+        window._open_viewer(pdf_arg)
     return app.exec()
 
 

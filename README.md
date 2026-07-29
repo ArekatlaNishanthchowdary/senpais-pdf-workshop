@@ -200,6 +200,11 @@ work across tools:
   Delete page — both of which call the same `rotate`/`remove` operations
   used everywhere else in the app and write a new file (the original is
   never touched), then reload the viewer onto that new file.
+- **"Open with" support (Windows installer only)** — right-click any .pdf →
+  Open with → Senpai's Pdf Workshop opens it straight into the viewer above.
+  Additive only — installing doesn't change your default PDF handler, it
+  just adds this as an option. Registered under `Applications\SenpaisPdfWorkshop.exe`
+  in `packaging/installer.iss`, cleaned up on uninstall.
 
 ## How it is put together
 
