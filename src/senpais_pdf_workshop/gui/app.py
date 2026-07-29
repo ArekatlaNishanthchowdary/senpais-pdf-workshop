@@ -10,9 +10,10 @@ from __future__ import annotations
 import html
 import shutil
 import sys
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, QSize, QUrl, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, QTimer, QUrl, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -521,30 +522,69 @@ class PipelineDialog(QDialog):
         self.run_button.setEnabled(True)
 
 
-class PdfViewerWindow(QMainWindow):
-    """A small, self-contained PDF viewer in its own window.
+class PageRenderWorker(QObject):
+    """Renders each requested page on its own short-lived daemon thread.
 
-    Renders pages with pypdfium2 (already a core dependency for every other
-    render/rasterize op in this app; Qt's own PDF viewer module isn't part of
-    the PySide6-Essentials package installed here, so this avoids a new
-    dependency). Rotate/Delete call straight into the `rotate`/`remove`
-    operations already registered elsewhere in the app and write a new file
-    -- same "operations never mutate in place" rule as everywhere else here
-    -- then reload the viewer onto that new file.
-
-    ponytail: renders synchronously on the UI thread rather than via a worker
-    thread -- a single-page render at typical zoom is fast enough (well under
-    the point a user would notice) that the thread-per-navigation overhead
-    isn't worth it here, unlike the thumbnail strip which renders many pages
-    at once. Revisit if very large/complex pages make navigation feel laggy.
+    ponytail: no QThread/moveToThread bookkeeping needed here -- a bare
+    daemon thread per request needs no explicit start/quit/wait lifecycle
+    (it just exits when the render is done), and Qt safely delivers signals
+    emitted from any OS thread into this object's home (main) thread either
+    way. Simpler than the QThread pattern used elsewhere in this file for
+    the same amount of thread-safety.
     """
+
+    rendered = Signal(int, object, int, int, float)
+    failed = Signal(int, str)
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path = path
+
+    def request(self, page_index: int, zoom: float) -> None:
+        threading.Thread(target=self._render, args=(page_index, zoom), daemon=True).start()
+
+    def _render(self, page_index: int, zoom: float) -> None:
+        try:
+            import pypdfium2 as pdfium
+
+            pdf = pdfium.PdfDocument(str(self._path))
+            image = pdf[page_index].render(scale=zoom).to_pil().convert("RGB")
+            self.rendered.emit(page_index, image.tobytes(), image.width, image.height, zoom)
+        except Exception as exc:
+            self.failed.emit(page_index, str(exc))
+
+
+class PdfViewerWindow(QMainWindow):
+    """A self-contained, continuously-scrollable PDF viewer in its own window.
+
+    All pages lay out top to bottom in one scrollable column, like a
+    browser's built-in PDF viewer -- no clicking through pages one at a
+    time. Rendering is virtualized: only pages near the viewport are
+    actually rasterized, on a dedicated background thread, so scrolling a
+    long document doesn't stutter waiting for pages you can't see yet.
+    Rotate/Delete apply to whichever page is currently at the top of the
+    viewport, and (like every operation elsewhere in this app) write a new
+    file rather than mutating anything in place, then reload the viewer
+    onto that file.
+
+    Uses pypdfium2 for rendering -- already a core dependency for every
+    other render/rasterize op in this app; Qt's own PDF viewer module isn't
+    part of the PySide6-Essentials package installed here.
+    """
+
+    _RENDER_BUFFER_SCREENS = 1.0  # render this many extra viewport-heights above/below
 
     def __init__(self, path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._path = path
-        self._page_index = 0
         self._page_count = 0
+        self._page_sizes: list[tuple[float, float]] = []
+        self._page_labels: list[QLabel] = []
+        self._rendered_zoom: dict[int, float] = {}
+        self._pending: set[int] = set()
         self._zoom = 1.5  # pypdfium2 scale factor; 1.0 == 72 DPI
+        self._current_page = 0
+        self._render_worker: PageRenderWorker | None = None
 
         self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(900, 1000)
@@ -553,21 +593,15 @@ class PdfViewerWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        prev_action = QAction("◀ Prev", self)
-        prev_action.triggered.connect(self._prev_page)
-        toolbar.addAction(prev_action)
+        self.page_indicator = QLabel("Page 1 of 1")
+        toolbar.addWidget(self.page_indicator)
+        toolbar.addSeparator()
 
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
-        self.page_spin.valueChanged.connect(self._go_to_page)
+        self.page_spin.setPrefix("Go to page ")
+        self.page_spin.editingFinished.connect(self._jump_to_spin_page)
         toolbar.addWidget(self.page_spin)
-
-        self.page_count_label = QLabel("of 1")
-        toolbar.addWidget(self.page_count_label)
-
-        next_action = QAction("Next ▶", self)
-        next_action.triggered.connect(self._next_page)
-        toolbar.addAction(next_action)
 
         toolbar.addSeparator()
 
@@ -600,87 +634,164 @@ class PdfViewerWindow(QMainWindow):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.page_label = QLabel()
-        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.scroll_area.setWidget(self.page_label)
+        self.scroll_area.verticalScrollBar().setSingleStep(24)  # finer wheel steps
+        self.pages_container = QWidget()
+        self.pages_layout = QVBoxLayout(self.pages_container)
+        self.pages_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.pages_layout.setSpacing(14)
+        self.pages_layout.setContentsMargins(16, 16, 16, 16)
+        self.scroll_area.setWidget(self.pages_container)
         self.setCentralWidget(self.scroll_area)
+
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scrolled)
+        self._render_check_timer = QTimer(self)
+        self._render_check_timer.setSingleShot(True)
+        self._render_check_timer.setInterval(60)
+        self._render_check_timer.timeout.connect(self._update_visible_renders)
 
         self.setStatusBar(QStatusBar())
         self._load(path)
+
+    # -- document loading -------------------------------------------------
 
     def _load(self, path: Path) -> None:
         try:
             import pypdfium2 as pdfium
 
-            page_count = len(pdfium.PdfDocument(str(path)))
+            pdf = pdfium.PdfDocument(str(path))
+            page_sizes = [pdf[i].get_size() for i in range(len(pdf))]
         except Exception as exc:
             QMessageBox.critical(self, "Couldn't open PDF", str(exc))
             self.close()
             return
+
         self._path = path
-        self._page_count = page_count
+        self._page_count = len(page_sizes)
+        self._page_sizes = page_sizes
+        self._rendered_zoom.clear()
+        self._pending.clear()
         self.setWindowTitle(path.name)
+
+        self._render_worker = PageRenderWorker(path)
+        self._render_worker.rendered.connect(self._on_page_rendered)
+        self._render_worker.failed.connect(self._on_page_failed)
+
+        self._build_page_widgets()
         self.page_spin.blockSignals(True)
-        self.page_spin.setMaximum(max(page_count, 1))
+        self.page_spin.setMaximum(max(self._page_count, 1))
         self.page_spin.setValue(1)
         self.page_spin.blockSignals(False)
-        self.page_count_label.setText(f"of {page_count}")
-        self._page_index = 0
-        self._render_current_page()
+        self._update_page_indicator(0)
+        QTimer.singleShot(0, self._update_visible_renders)
 
-    def _render_current_page(self) -> None:
-        try:
-            import pypdfium2 as pdfium
+    def _build_page_widgets(self) -> None:
+        while self.pages_layout.count():
+            item = self.pages_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._page_labels = []
+        for width_pt, height_pt in self._page_sizes:
+            label = QLabel()
+            label.setFixedSize(
+                max(int(width_pt * self._zoom), 1), max(int(height_pt * self._zoom), 1)
+            )
+            label.setStyleSheet("background: white; border: 1px solid rgba(0,0,0,40);")
+            self.pages_layout.addWidget(label)
+            self._page_labels.append(label)
 
-            pdf = pdfium.PdfDocument(str(self._path))
-            image = pdf[self._page_index].render(scale=self._zoom).to_pil().convert("RGB")
-        except Exception as exc:
-            self.statusBar().showMessage(f"⚠️  Couldn't render page: {exc}")
+    # -- virtualized rendering ---------------------------------------------
+
+    def _on_scrolled(self, _value: int) -> None:
+        self._render_check_timer.start()
+        self._update_page_indicator(self._page_at_scroll_position())
+
+    def _update_visible_renders(self) -> None:
+        if not self._page_labels:
             return
-        qimage = QImage(
-            image.tobytes(), image.width, image.height, image.width * 3, QImage.Format.Format_RGB888
-        )
-        self.page_label.setPixmap(QPixmap.fromImage(qimage))
-        self.page_label.adjustSize()
-        self.statusBar().showMessage(f"Page {self._page_index + 1} of {self._page_count}")
+        viewport_h = self.scroll_area.viewport().height()
+        top = self.scroll_area.verticalScrollBar().value()
+        bottom = top + viewport_h
+        buffer = int(viewport_h * self._RENDER_BUFFER_SCREENS)
+        for index, label in enumerate(self._page_labels):
+            label_top, label_bottom = label.y(), label.y() + label.height()
+            if label_bottom >= top - buffer and label_top <= bottom + buffer:
+                if self._rendered_zoom.get(index) != self._zoom and index not in self._pending:
+                    self._pending.add(index)
+                    self._render_worker.request(index, self._zoom)
 
-    def _go_to_page(self, page_number: int) -> None:
-        self._page_index = page_number - 1
-        self._render_current_page()
+    @Slot(int, object, int, int, float)
+    def _on_page_rendered(
+        self, index: int, data: bytes, width: int, height: int, zoom: float
+    ) -> None:
+        if self.sender() is not self._render_worker:
+            return  # stale: a previous _load()'s daemon thread finishing late
+        self._pending.discard(index)
+        if zoom != self._zoom or index >= len(self._page_labels):
+            return  # stale: a zoom change or reload happened before this arrived
+        qimage = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888)
+        self._page_labels[index].setPixmap(QPixmap.fromImage(qimage))
+        self._rendered_zoom[index] = zoom
 
-    def _prev_page(self) -> None:
-        if self._page_index > 0:
-            self.page_spin.setValue(self._page_index)
+    def _on_page_failed(self, index: int, message: str) -> None:
+        if self.sender() is not self._render_worker:
+            return  # stale: a previous _load()'s daemon thread finishing late
+        self._pending.discard(index)
+        self.statusBar().showMessage(f"⚠️  Couldn't render page {index + 1}: {message}")
 
-    def _next_page(self) -> None:
-        if self._page_index < self._page_count - 1:
-            self.page_spin.setValue(self._page_index + 2)
+    # -- navigation ----------------------------------------------------------
+
+    def _page_at_scroll_position(self) -> int:
+        if not self._page_labels:
+            return 0
+        top = self.scroll_area.verticalScrollBar().value()
+        for index, label in enumerate(self._page_labels):
+            if label.y() + label.height() > top:
+                return index
+        return len(self._page_labels) - 1
+
+    def _update_page_indicator(self, page_index: int) -> None:
+        self._current_page = page_index
+        self.page_indicator.setText(f"Page {page_index + 1} of {self._page_count}")
+
+    def _scroll_to_page(self, index: int) -> None:
+        if 0 <= index < len(self._page_labels):
+            self.scroll_area.verticalScrollBar().setValue(self._page_labels[index].y())
+
+    def _jump_to_spin_page(self) -> None:
+        self._scroll_to_page(self.page_spin.value() - 1)
 
     def _set_zoom(self, zoom: float) -> None:
         self._zoom = max(0.25, min(zoom, 6.0))
-        self._render_current_page()
+        current = self._current_page
+        for (width_pt, height_pt), label in zip(self._page_sizes, self._page_labels):
+            label.setFixedSize(max(int(width_pt * self._zoom), 1), max(int(height_pt * self._zoom), 1))
+            label.setPixmap(QPixmap())
+        self._rendered_zoom.clear()
+        QTimer.singleShot(0, lambda: self._scroll_to_page(current))
+        QTimer.singleShot(0, self._update_visible_renders)
+
+    # -- edits ----------------------------------------------------------
 
     def _rotate_current_page(self) -> None:
-        self._apply_edit(
-            "rotate", {"angle": "90", "pages": str(self._page_index + 1)}, "Rotated page"
-        )
+        page = self._current_page
+        self._apply_edit("rotate", {"angle": "90", "pages": str(page + 1)}, "Rotated page", page)
 
     def _delete_current_page(self) -> None:
         if self._page_count <= 1:
             self.statusBar().showMessage("⚠️  Can't delete the only page.")
             return
+        page = self._current_page
         reply = QMessageBox.question(
             self,
             "Delete page",
-            f"Delete page {self._page_index + 1}? This writes a new file --"
+            f"Delete page {page + 1}? This writes a new file --"
             " the original is left untouched.",
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self._apply_edit("remove", {"pages": str(self._page_index + 1)}, "Deleted page")
+        self._apply_edit("remove", {"pages": str(page + 1)}, "Deleted page", page)
 
-    def _apply_edit(self, op_id: str, params: dict, verb: str) -> None:
+    def _apply_edit(self, op_id: str, params: dict, verb: str, target_page: int) -> None:
         try:
             written = REGISTRY[op_id].run([self._path], self._path.parent, **params)
         except Exception as exc:
@@ -688,6 +799,7 @@ class PdfViewerWindow(QMainWindow):
             return
         new_path = written[0]
         self._load(new_path)
+        QTimer.singleShot(0, lambda: self._scroll_to_page(min(target_page, self._page_count - 1)))
         self.statusBar().showMessage(f"✅ {verb} — saved as {new_path.name}")
 
     def _save_copy(self) -> None:

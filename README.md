@@ -195,11 +195,14 @@ work across tools:
 - **🌙/☀️ Dark and light themes** — button next to the search box, switches
   instantly and remembers your choice.
 - **👁️ PDF viewer** — "View a PDF…" opens any file, and a "View result"
-  button appears after a run that produced a PDF. Opens in its own window
-  with page navigation, zoom, and two basic edit actions — Rotate page and
-  Delete page — both of which call the same `rotate`/`remove` operations
-  used everywhere else in the app and write a new file (the original is
-  never touched), then reload the viewer onto that new file.
+  button appears after a run that produced a PDF. Opens in its own window as
+  one continuous, smoothly scrollable document — no clicking through pages
+  one at a time — with virtualized rendering (only pages near the viewport
+  are rasterized, off the UI thread, so scrolling a long document doesn't
+  stutter), a "Go to page" jump box, zoom, and two basic edit actions —
+  Rotate page and Delete page — both of which call the same `rotate`/`remove`
+  operations used everywhere else in the app and write a new file (the
+  original is never touched), then reload the viewer onto that new file.
 - **"Open with" support (Windows installer only)** — right-click any .pdf →
   Open with → Senpai's Pdf Workshop opens it straight into the viewer above.
   Additive only — installing doesn't change your default PDF handler, it
