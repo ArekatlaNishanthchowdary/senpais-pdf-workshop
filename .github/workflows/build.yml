@@ -43,7 +43,7 @@ jobs:
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libgl1
 
       - name: Install the project
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,extras]"
 
       - name: Run tests
         run: pytest -q
