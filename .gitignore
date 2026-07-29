@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+
+# Build output -- regenerate with pyinstaller / iscc, never commit
+build/
+dist/
+*.spec
+
+# Third-party installers bundled into the Windows installer -- large binaries,
+# not source; see packaging/installer.iss for the download URLs
+packaging/bundled/
+
+# Editor / tool local config
+.claude/
+.vscode/
+.idea/

@@ -1,0 +1,65 @@
+[project]
+name = "quire"
+version = "0.1.0"
+description = "Senpai's Pdf Workshop -- local PDF tools. Nothing leaves your machine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+keywords = ["pdf", "offline", "desktop", "privacy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Utilities",
+]
+
+# Every runtime dependency here is permissively licensed:
+#   pypdf     BSD-3-Clause
+#   pikepdf   MPL-2.0  (not viral; only pikepdf changes must be published)
+#   PySide6   LGPL-3.0 (Qt for Python -- the LGPL build, not GPL PyQt)
+dependencies = [
+    "pypdf>=5.1",
+    "pikepdf>=9.0",
+    "PySide6-Essentials>=6.7",
+    "cryptography>=42.0",  # Apache-2.0/BSD-3 -- AES support for pypdf's reader
+    "Pillow>=10.0",  # HPND (permissive) -- image decode/encode for stamps and image ops
+    "pypdfium2>=4.30",  # BSD-3/Apache -- PDF<->image rendering, always registered so it's core now
+]
+
+[project.optional-dependencies]
+# Kept out of the default install on purpose -- either wrapping AGPL/GPL
+# external binaries (Ghostscript, Tesseract, LibreOffice) as separate
+# processes the user installs themselves, or pulling in a heavy pure-Python
+# dependency chain (camelot-py's table detection: pandas, numpy, OpenCV) for
+# a single niche operation. All permissively licensed (MIT/BSD-3/Apache-2.0);
+# the operations detect their absence and raise a clear error instead of
+# failing to import.
+extras = [
+    "ocrmypdf>=16.0",
+    "camelot-py>=1.0",
+    "openpyxl>=3.1",
+    "pdfplumber>=0.11",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+]
+dev = ["pytest>=8.0", "ruff>=0.6", "pyinstaller>=6.0", "reportlab>=4.0"]
+
+[project.scripts]
+quire = "quire.cli:main"
+
+[project.gui-scripts]
+quire-gui = "quire.gui.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quire"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 90
