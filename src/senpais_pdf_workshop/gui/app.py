@@ -10,7 +10,9 @@ from __future__ import annotations
 import html
 import shutil
 import sys
+import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QSize, QTimer, QUrl, Qt, QThread, Signal, Slot
@@ -325,6 +327,33 @@ def read_field(widget: QWidget):
     return widget.text()
 
 
+def _move_written_files(
+    written: list[Path], out_dir: Path, cleanup_dir: Path | None = None
+) -> list[Path]:
+    """Copy each file into out_dir (overwriting any same-named file already
+    there), then best-effort remove cleanup_dir. Promotes a temp-dir preview
+    result to the user's real output folder once they confirm it.
+
+    ponytail: copy, not move/rename -- the preview's PageRenderWorker may
+    still have this exact file open on a background thread (rendering the
+    page the user is looking at right when they click Save), and on Windows
+    a rename needs exclusive access the way a read-only copy doesn't. Any
+    leftover locked file in cleanup_dir is swallowed by ignore_errors, not
+    fatal to the save.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for path in written:
+        target = out_dir / path.name
+        if target.exists():
+            target.unlink()
+        shutil.copyfile(path, target)
+        moved.append(target)
+    if cleanup_dir is not None:
+        shutil.rmtree(cleanup_dir, ignore_errors=True)
+    return moved
+
+
 def _guide_html() -> str:
     """The home-page walkthrough, built from the registry so it can never drift
     out of sync with what the tools actually do."""
@@ -337,7 +366,11 @@ def _guide_html() -> str:
         "<li>Search or pick a tool from the list on the left.</li>"
         "<li>Add files — drag and drop them onto the Files box, or click Add files.</li>"
         "<li>Set any options for that tool (most have sensible defaults already filled in).</li>"
-        "<li>Click Run. Results are written to the output folder shown above the Run button.</li>"
+        "<li>Click Run. If it produced one PDF, a preview window opens first — "
+        "Save as… lets you pick exactly where to keep it (starting from the "
+        "output folder shown above the Run button), Re-run lets you tweak the "
+        "options and try again, Discard throws it away. Anything else (batch "
+        "runs, or a non-PDF result) is written straight away.</li>"
         "</ol>",
         "<h3>What each tool does</h3>",
     ]
@@ -554,6 +587,18 @@ class PageRenderWorker(QObject):
             self.failed.emit(page_index, str(exc))
 
 
+@dataclass
+class PreviewContext:
+    """What PdfViewerWindow needs to act as a save/discard/re-run confirmation
+    step for a just-run operation, instead of just an open-file viewer."""
+
+    main_window: Window
+    op: Operation
+    sources: list[Path]
+    out_dir: Path
+    temp_dir: Path
+
+
 class PdfViewerWindow(QMainWindow):
     """A self-contained, continuously-scrollable PDF viewer in its own window.
 
@@ -574,7 +619,12 @@ class PdfViewerWindow(QMainWindow):
 
     _RENDER_BUFFER_SCREENS = 1.0  # render this many extra viewport-heights above/below
 
-    def __init__(self, path: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        parent: QWidget | None = None,
+        preview: PreviewContext | None = None,
+    ) -> None:
         super().__init__(parent)
         self._path = path
         self._page_count = 0
@@ -585,6 +635,7 @@ class PdfViewerWindow(QMainWindow):
         self._zoom = 1.5  # pypdfium2 scale factor; 1.0 == 72 DPI
         self._current_page = 0
         self._render_worker: PageRenderWorker | None = None
+        self._preview = preview
 
         self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(900, 1000)
@@ -592,6 +643,19 @@ class PdfViewerWindow(QMainWindow):
         toolbar = QToolBar()
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
+
+        if preview is not None:
+            self.setWindowTitle(f"Preview — {preview.op.label}")
+            save_action = QAction("💾 Save as…", self)
+            save_action.triggered.connect(self._preview_save)
+            toolbar.addAction(save_action)
+            rerun_action = QAction("🔁 Re-run with new options", self)
+            rerun_action.triggered.connect(self._preview_rerun)
+            toolbar.addAction(rerun_action)
+            discard_action = QAction("✖ Discard", self)
+            discard_action.triggered.connect(self._preview_discard)
+            toolbar.addAction(discard_action)
+            toolbar.addSeparator()
 
         self.page_indicator = QLabel("Page 1 of 1")
         toolbar.addWidget(self.page_indicator)
@@ -651,6 +715,10 @@ class PdfViewerWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self._load(path)
+        if preview is not None:
+            self.statusBar().showMessage(
+                "👁️ Previewing — nothing is saved yet. Save as…, Re-run, or Discard above."
+            )
 
     # -- document loading -------------------------------------------------
 
@@ -814,6 +882,68 @@ class PdfViewerWindow(QMainWindow):
     def _open_externally(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._path)))
 
+    # -- preview mode: confirm/re-run/discard before anything is saved ----
+
+    def closeEvent(self, event) -> None:
+        # ponytail: closing the window (X button) without clicking Save counts
+        # as Discard -- there's nothing "saved" for the user to lose, it was
+        # only ever in a temp dir.
+        if self._preview is not None:
+            shutil.rmtree(self._preview.temp_dir, ignore_errors=True)
+            self._preview.main_window.statusBar().showMessage(
+                "Discarded preview — nothing was saved."
+            )
+            self._preview = None
+        super().closeEvent(event)
+
+    def _preview_save(self) -> None:
+        ctx = self._preview
+        if ctx is None:
+            return
+        ctx.out_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(ctx.out_dir / self._path.name)
+        target_str, _ = QFileDialog.getSaveFileName(
+            self, "Save result", suggested, "PDF files (*.pdf)"
+        )
+        if not target_str:
+            return  # cancelled -- still previewing, nothing saved yet
+        target = Path(target_str)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self._path, target)  # copy, not move -- see _move_written_files
+        shutil.rmtree(ctx.temp_dir, ignore_errors=True)
+        self._preview = None
+        ctx.main_window._report_saved([target])
+        self.close()
+
+    def _preview_discard(self) -> None:
+        self.close()  # closeEvent does the actual cleanup
+
+    def _preview_rerun(self) -> None:
+        ctx = self._preview
+        if ctx is None:
+            return
+        main = ctx.main_window
+        if main._op is not ctx.op:
+            QMessageBox.information(
+                self,
+                "Switch tools back",
+                f'Select "{ctx.op.label}" again in the main window to re-run it '
+                "with new options.",
+            )
+            return
+        values = {name: read_field(w) for name, w in main._fields.items()}
+        try:
+            written = ctx.op.run(ctx.sources, ctx.temp_dir, **values)
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't re-run", str(exc))
+            return
+        new_pdf = next((p for p in written if p.suffix.lower() == ".pdf"), None)
+        if new_pdf is None:
+            QMessageBox.warning(self, "No PDF produced", "This run didn't produce a PDF to preview.")
+            return
+        self._load(new_pdf)
+        self.statusBar().showMessage("🔁 Re-ran with updated options — still just a preview.")
+
 
 class Window(QMainWindow):
     def __init__(self) -> None:
@@ -828,6 +958,8 @@ class Window(QMainWindow):
         self._thread: QThread | None = None
         self._last_output_dir: Path | None = None
         self._last_result_pdf: Path | None = None
+        self._preview_temp_dir: Path | None = None
+        self._last_run_sources: list[Path] = []
         self._slots: tuple[InputSlot, ...] = ()
         self._slot_lists: dict[str, FileDropList] = {}
         self._slot_sources: dict[str, list[Path]] = {}
@@ -1204,15 +1336,27 @@ class Window(QMainWindow):
         self.progress.setVisible(True)
         self.statusBar().showMessage(f"Running {self._op.label}…")
 
+        self._last_run_sources = sources
+        # ponytail: batch mode writes straight to the real output dir like
+        # before -- previewing one-of-many isn't worth building yet, add if
+        # requested. Everything else runs into a scratch dir first so a
+        # single-PDF result can be previewed/re-run before it's kept.
+        if self._is_batch_active():
+            self._preview_temp_dir = None
+            target_dir = self._out_dir
+        else:
+            self._preview_temp_dir = Path(tempfile.mkdtemp(prefix="senpai_preview_"))
+            target_dir = self._preview_temp_dir
+
         self._thread = QThread()
         if self._is_batch_active():
             self.progress.setRange(0, len(sources))
             self.progress.setValue(0)
-            self._worker = BatchWorker(self._op, sources, self._out_dir, values)
+            self._worker = BatchWorker(self._op, sources, target_dir, values)
             self._worker.progress.connect(self._on_batch_progress)
         else:
             self.progress.setRange(0, 0)
-            self._worker = Worker(self._op, sources, self._out_dir, values)
+            self._worker = Worker(self._op, sources, target_dir, values)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_done)
@@ -1234,6 +1378,30 @@ class Window(QMainWindow):
 
     def _on_done(self, written: list) -> None:
         self._finish()
+        temp_dir = self._preview_temp_dir
+        self._preview_temp_dir = None
+        if temp_dir is not None:
+            if len(written) == 1 and written[0].suffix.lower() == ".pdf":
+                ctx = PreviewContext(
+                    main_window=self,
+                    op=self._op,
+                    sources=self._last_run_sources,
+                    out_dir=self._out_dir,
+                    temp_dir=temp_dir,
+                )
+                viewer = PdfViewerWindow(written[0], self, preview=ctx)
+                viewer.show()
+                self._viewers.append(viewer)
+                self.statusBar().showMessage(
+                    "👁️ Previewing result — click Save as… in the viewer to choose where to keep it."
+                )
+                return
+            # not a single-PDF result (e.g. split's several files, or a
+            # non-PDF conversion) -- nothing sensible to preview, so keep it.
+            written = _move_written_files(written, self._out_dir, cleanup_dir=temp_dir)
+        self._report_saved(written)
+
+    def _report_saved(self, written: list) -> None:
         count = len(written)
         where = written[0].parent if written else self._out_dir
         self._last_output_dir = where
@@ -1250,6 +1418,9 @@ class Window(QMainWindow):
 
     def _on_failed(self, message: str) -> None:
         self._finish()
+        if self._preview_temp_dir is not None:
+            shutil.rmtree(self._preview_temp_dir, ignore_errors=True)
+            self._preview_temp_dir = None
         self.statusBar().showMessage(f"⚠️  {message}")
 
     def _finish(self) -> None:
