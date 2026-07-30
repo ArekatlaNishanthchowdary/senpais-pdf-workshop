@@ -4,16 +4,16 @@
 
 # Senpai's Pdf Workshop
 
-**45 local PDF tools. No upload, no account, no Docker, no page limits.**
+**46 local PDF tools. No upload, no account, no Docker, no page limits.**
 
 Everything runs in the process on your own machine — a desktop window and a command
-line, generated from the same 45-operation registry, with zero interface code
+line, generated from the same 46-operation registry, with zero interface code
 written per tool.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#packaging)
-[![Tests: 88 passing](https://img.shields.io/badge/tests-88%20passing-brightgreen.svg)](tests)
+[![Tests: 100 passing](https://img.shields.io/badge/tests-100%20passing-brightgreen.svg)](tests)
 
 </div>
 
@@ -25,7 +25,7 @@ written per tool.
 
 - [Why this exists](#why-this-exists)
 - [Quick start](#quick-start)
-- [What it can do](#what-it-can-do-45-operations)
+- [What it can do](#what-it-can-do-46-operations)
 - [Pipelines, batch mode, and other GUI features](#pipelines-batch-mode-and-other-gui-features)
 - [How it is put together](#how-it-is-put-together)
 - [Adding an operation](#adding-an-operation)
@@ -69,7 +69,7 @@ need it, and it's light enough not to gate.)
 Want a Windows installer instead of running from source? See
 [Packaging](#packaging).
 
-## What it can do (45 operations)
+## What it can do (46 operations)
 
 <details>
 <summary><b>🗂️ Organise</b> (10) — merge, split, extract, remove, rotate, reverse, reorder, insert, split by count / by bookmarks</summary>
@@ -126,11 +126,15 @@ Want a Windows installer instead of running from source? See
 </details>
 
 <details>
-<summary><b>📤 Extract</b> (3) — embedded images, plain text, XML dump</summary>
+<summary><b>📤 Extract</b> (4) — embedded images, plain text, XML dump, PDF compare</summary>
 
 - **Extract embedded images** — Save every raster image embedded in the document to disk.
 - **Extract plain text** — Save the readable text of the document to a .txt file.
 - **PDF to XML** — Dump each page's text into a simple `<document><page>` XML structure.
+- **Compare two PDFs** — Produce a page-by-page diff report between two PDFs as a Markdown
+  file. Pages are matched by content first, so an inserted or deleted page doesn't throw off
+  every page number after it, then changed pages get a line-level diff. Added/removed pages
+  are called out on their own.
 </details>
 
 <details>
@@ -203,6 +207,18 @@ work across tools:
   Rotate page and Delete page — both of which call the same `rotate`/`remove`
   operations used everywhere else in the app and write a new file (the
   original is never touched), then reload the viewer onto that new file.
+- **Preview before saving** — when a (non-batch) run produces exactly one
+  PDF, it's written to a scratch folder first and opens straight in the
+  viewer above with three extra buttons: **Save as…** (opens a normal Windows
+  save dialog, starting from your chosen output folder, so you pick the exact
+  file name and location), **Re-run with new options** (re-reads whatever is
+  in the Options panel right now and tries again against the same scratch
+  copy — switch back to that tool first if you've since picked another one),
+  and **Discard** (throws it away — closing the window does the same).
+  Nothing lands on disk permanently until you confirm the Save as… dialog.
+  Batch runs and non-PDF conversions (Excel/Word/PowerPoint/images) skip this
+  and save immediately, same as before, since there's nothing to preview them
+  with.
 - **"Open with" support (Windows installer only)** — right-click any .pdf →
   Open with → Senpai's Pdf Workshop opens it straight into the viewer above.
   Additive only — installing doesn't change your default PDF handler, it

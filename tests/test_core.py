@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfReader, PdfWriter
 
+from senpais_pdf_workshop.core.ops.extract_content import _diff_report
 from senpais_pdf_workshop.core.pages import parse_range
 from senpais_pdf_workshop.core.registry import REGISTRY, load_operations
 
@@ -112,6 +113,39 @@ def test_scrub(sample, tmp_path):
 
 def test_repair(sample, tmp_path):
     assert pages(REGISTRY["repair"].run([sample], tmp_path / "o")[0]) == 6
+
+
+# -- compare ---------------------------------------------------------------
+
+
+def test_diff_report_detects_changed_and_added_pages():
+    report = _diff_report(
+        "a.pdf", "b.pdf", ["one", "two", "three"], ["one", "TWO", "three", "four"]
+    )
+    assert "2 unchanged, 1 changed, 1 added, 0 removed" in report
+    assert "Page 2 -> 2 changed" in report
+    assert "Page 4 added" in report
+
+
+def test_diff_report_detects_removed_pages():
+    report = _diff_report("a.pdf", "b.pdf", ["one", "two"], ["one"])
+    assert "1 unchanged, 0 changed, 0 added, 1 removed" in report
+    assert "Page 2 removed" in report
+
+
+def test_diff_report_no_differences():
+    assert "No differences found." in _diff_report("a.pdf", "b.pdf", ["x"], ["x"])
+
+
+def test_compare_requires_two_files(sample, tmp_path):
+    with pytest.raises(ValueError):
+        REGISTRY["compare"].run([sample], tmp_path / "o")
+
+
+def test_compare_writes_markdown_report(sample, tmp_path):
+    out = REGISTRY["compare"].run([sample, sample], tmp_path / "o")
+    assert out[0].suffix == ".md"
+    assert "No differences found." in out[0].read_text(encoding="utf-8")
 
 
 # -- registry contract ---------------------------------------------------
