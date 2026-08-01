@@ -410,10 +410,3 @@ install "senpais-pdf-workshop[extras]"`) plus a Tesseract ≥ 4.1.1 install on P
 name, so two source files that happen to share a stem never overwrite each
 other.
 
----
-
-<div align="center">
-
-Built with [Claude Code](https://claude.com/claude-code).
-
-</div>
