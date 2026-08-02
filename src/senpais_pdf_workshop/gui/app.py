@@ -15,8 +15,29 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, QSize, QTimer, QUrl, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QPixmap
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QRectF,
+    QSettings,
+    QSize,
+    QTimer,
+    QUrl,
+    Qt,
+    QThread,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -555,6 +576,87 @@ class PipelineDialog(QDialog):
         self.run_button.setEnabled(True)
 
 
+def _page_links(page) -> list[tuple[tuple[float, float, float, float], object]]:
+    """Native link annotations on a page: (left, bottom, right, top) in PDF
+    canvas units, paired with either a URL string or an int target page index.
+
+    ponytail: only FPDFLink_* annotation links (what a PDF author actually
+    hyperlinked) -- pdfium's separate FPDFLink_LoadWebLinks API auto-detects
+    bare-text URLs too; skipped, add if plain-text links need to be clickable.
+    """
+    import ctypes
+
+    import pypdfium2.raw as pdfium_c
+
+    links: list[tuple[tuple[float, float, float, float], object]] = []
+    pos = ctypes.c_int(0)
+    link = pdfium_c.FPDF_LINK()
+    while pdfium_c.FPDFLink_Enumerate(page.raw, ctypes.byref(pos), ctypes.byref(link)):
+        rect = pdfium_c.FS_RECTF()
+        if not pdfium_c.FPDFLink_GetAnnotRect(link, ctypes.byref(rect)):
+            continue
+        box = (rect.left, rect.bottom, rect.right, rect.top)
+        target: object = None
+        dest = None
+        action = pdfium_c.FPDFLink_GetAction(link)
+        if action:
+            if pdfium_c.FPDFAction_GetType(action) == pdfium_c.PDFACTION_URI:
+                size = pdfium_c.FPDFAction_GetURIPath(page.pdf.raw, action, None, 0)
+                if size:
+                    buf = ctypes.create_string_buffer(size)
+                    pdfium_c.FPDFAction_GetURIPath(page.pdf.raw, action, buf, size)
+                    target = buf.value.decode("utf-8", "ignore")
+            else:
+                dest = pdfium_c.FPDFAction_GetDest(page.pdf.raw, action)
+        else:
+            dest = pdfium_c.FPDFLink_GetDest(page.pdf.raw, link)
+        if dest:
+            index = pdfium_c.FPDFDest_GetDestPageIndex(page.pdf.raw, dest)
+            if index >= 0:
+                target = index
+        if target is not None:
+            links.append((box, target))
+    return links
+
+
+class PageLabel(QLabel):
+    """One rendered page: a bitmap plus a text-selection/link overlay hit-tested
+    against pdfium's own text and link data, so both line up exactly with the
+    rendered glyphs -- not a separate OCR or re-parse pass."""
+
+    def __init__(self, viewer: "PdfViewerWindow", page_index: int) -> None:
+        super().__init__()
+        self._viewer = viewer
+        self._page_index = page_index
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.IBeamCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._viewer.begin_selection(self._page_index, event.position())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._viewer.extend_selection(self._page_index, event.position())
+        else:
+            self._viewer.update_hover_cursor(self, self._page_index, event.position())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._viewer.finish_selection(self._page_index, event.position()):
+                self._viewer.open_link_at(self._page_index, event.position())
+        super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event) -> None:
+        self._viewer.show_selection_menu(self.mapToGlobal(event.pos()))
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        self._viewer.paint_selection_overlay(self, self._page_index)
+
+
 class PageRenderWorker(QObject):
     """Renders each requested page on its own short-lived daemon thread.
 
@@ -566,23 +668,23 @@ class PageRenderWorker(QObject):
     the same amount of thread-safety.
     """
 
-    rendered = Signal(int, object, int, int, float)
+    rendered = Signal(int, object, int, int, float, float)
     failed = Signal(int, str)
 
     def __init__(self, path: Path) -> None:
         super().__init__()
         self._path = path
 
-    def request(self, page_index: int, zoom: float) -> None:
-        threading.Thread(target=self._render, args=(page_index, zoom), daemon=True).start()
+    def request(self, page_index: int, zoom: float, dpr: float) -> None:
+        threading.Thread(target=self._render, args=(page_index, zoom, dpr), daemon=True).start()
 
-    def _render(self, page_index: int, zoom: float) -> None:
+    def _render(self, page_index: int, zoom: float, dpr: float) -> None:
         try:
             import pypdfium2 as pdfium
 
             pdf = pdfium.PdfDocument(str(self._path))
-            image = pdf[page_index].render(scale=zoom).to_pil().convert("RGB")
-            self.rendered.emit(page_index, image.tobytes(), image.width, image.height, zoom)
+            image = pdf[page_index].render(scale=zoom * dpr).to_pil().convert("RGB")
+            self.rendered.emit(page_index, image.tobytes(), image.width, image.height, zoom, dpr)
         except Exception as exc:
             self.failed.emit(page_index, str(exc))
 
@@ -614,7 +716,10 @@ class PdfViewerWindow(QMainWindow):
 
     Uses pypdfium2 for rendering -- already a core dependency for every
     other render/rasterize op in this app; Qt's own PDF viewer module isn't
-    part of the PySide6-Essentials package installed here.
+    part of the PySide6-Essentials package installed here. Text selection and
+    link click-through are hit-tested against pdfium's own text/link data
+    (see PageLabel, _page_links), and page bitmaps render at the screen's
+    actual device pixel ratio so they stay sharp on HiDPI displays.
     """
 
     _RENDER_BUFFER_SCREENS = 1.0  # render this many extra viewport-heights above/below
@@ -629,13 +734,22 @@ class PdfViewerWindow(QMainWindow):
         self._path = path
         self._page_count = 0
         self._page_sizes: list[tuple[float, float]] = []
-        self._page_labels: list[QLabel] = []
-        self._rendered_zoom: dict[int, float] = {}
+        self._page_labels: list[PageLabel] = []
+        self._rendered_key: dict[int, tuple[float, float]] = {}
         self._pending: set[int] = set()
         self._zoom = 1.5  # pypdfium2 scale factor; 1.0 == 72 DPI
         self._current_page = 0
         self._render_worker: PageRenderWorker | None = None
         self._preview = preview
+
+        # Text/link overlay -- opened lazily, main-thread only, separate
+        # PdfDocument from the render worker's (pypdfium2 handles aren't
+        # meant to be shared across threads).
+        self._text_doc = None
+        self._text_pages: dict[int, object] = {}
+        self._page_link_cache: dict[int, list[tuple[tuple[float, float, float, float], object]]] = {}
+        self._selection: tuple[int, int, int] | None = None  # (page_index, start_char, end_char)
+        self._selecting_anchor: int | None = None
 
         self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(900, 1000)
@@ -736,8 +850,13 @@ class PdfViewerWindow(QMainWindow):
         self._path = path
         self._page_count = len(page_sizes)
         self._page_sizes = page_sizes
-        self._rendered_zoom.clear()
+        self._rendered_key.clear()
         self._pending.clear()
+        self._text_doc = None
+        self._text_pages.clear()
+        self._page_link_cache.clear()
+        self._selection = None
+        self._selecting_anchor = None
         self.setWindowTitle(path.name)
 
         self._render_worker = PageRenderWorker(path)
@@ -758,8 +877,8 @@ class PdfViewerWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self._page_labels = []
-        for width_pt, height_pt in self._page_sizes:
-            label = QLabel()
+        for index, (width_pt, height_pt) in enumerate(self._page_sizes):
+            label = PageLabel(self, index)
             label.setFixedSize(
                 max(int(width_pt * self._zoom), 1), max(int(height_pt * self._zoom), 1)
             )
@@ -768,6 +887,9 @@ class PdfViewerWindow(QMainWindow):
             self._page_labels.append(label)
 
     # -- virtualized rendering ---------------------------------------------
+
+    def _current_dpr(self) -> float:
+        return self.devicePixelRatioF() or 1.0
 
     def _on_scrolled(self, _value: int) -> None:
         self._render_check_timer.start()
@@ -780,25 +902,29 @@ class PdfViewerWindow(QMainWindow):
         top = self.scroll_area.verticalScrollBar().value()
         bottom = top + viewport_h
         buffer = int(viewport_h * self._RENDER_BUFFER_SCREENS)
+        dpr = self._current_dpr()
+        key = (self._zoom, dpr)
         for index, label in enumerate(self._page_labels):
             label_top, label_bottom = label.y(), label.y() + label.height()
             if label_bottom >= top - buffer and label_top <= bottom + buffer:
-                if self._rendered_zoom.get(index) != self._zoom and index not in self._pending:
+                if self._rendered_key.get(index) != key and index not in self._pending:
                     self._pending.add(index)
-                    self._render_worker.request(index, self._zoom)
+                    self._render_worker.request(index, self._zoom, dpr)
 
-    @Slot(int, object, int, int, float)
+    @Slot(int, object, int, int, float, float)
     def _on_page_rendered(
-        self, index: int, data: bytes, width: int, height: int, zoom: float
+        self, index: int, data: bytes, width: int, height: int, zoom: float, dpr: float
     ) -> None:
         if self.sender() is not self._render_worker:
             return  # stale: a previous _load()'s daemon thread finishing late
         self._pending.discard(index)
-        if zoom != self._zoom or index >= len(self._page_labels):
-            return  # stale: a zoom change or reload happened before this arrived
+        key = (zoom, dpr)
+        if key != (self._zoom, self._current_dpr()) or index >= len(self._page_labels):
+            return  # stale: a zoom/screen change or reload happened before this arrived
         qimage = QImage(data, width, height, width * 3, QImage.Format.Format_RGB888)
+        qimage.setDevicePixelRatio(dpr)
         self._page_labels[index].setPixmap(QPixmap.fromImage(qimage))
-        self._rendered_zoom[index] = zoom
+        self._rendered_key[index] = key
 
     def _on_page_failed(self, index: int, message: str) -> None:
         if self.sender() is not self._render_worker:
@@ -834,9 +960,156 @@ class PdfViewerWindow(QMainWindow):
         for (width_pt, height_pt), label in zip(self._page_sizes, self._page_labels):
             label.setFixedSize(max(int(width_pt * self._zoom), 1), max(int(height_pt * self._zoom), 1))
             label.setPixmap(QPixmap())
-        self._rendered_zoom.clear()
+        self._rendered_key.clear()
         QTimer.singleShot(0, lambda: self._scroll_to_page(current))
         QTimer.singleShot(0, self._update_visible_renders)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ScreenChangeInternal:
+            # Moved to a monitor with a different device pixel ratio --
+            # re-render at the new DPR instead of staying soft/blurry there.
+            QTimer.singleShot(0, self._update_visible_renders)
+
+    # -- text selection and links -------------------------------------------
+
+    def _ensure_text_doc(self):
+        if self._text_doc is None:
+            import pypdfium2 as pdfium
+
+            self._text_doc = pdfium.PdfDocument(str(self._path))
+        return self._text_doc
+
+    def _textpage(self, page_index: int):
+        if page_index in self._text_pages:
+            return self._text_pages[page_index]
+        doc = self._ensure_text_doc()
+        if not (0 <= page_index < len(doc)):
+            return None
+        tp = doc[page_index].get_textpage()
+        self._text_pages[page_index] = tp
+        return tp
+
+    def _links_for(self, page_index: int) -> list[tuple[tuple[float, float, float, float], object]]:
+        if page_index in self._page_link_cache:
+            return self._page_link_cache[page_index]
+        doc = self._ensure_text_doc()
+        links = _page_links(doc[page_index]) if 0 <= page_index < len(doc) else []
+        self._page_link_cache[page_index] = links
+        return links
+
+    def _point_to_pdf(self, page_index: int, pos) -> tuple[float, float]:
+        height_pt = self._page_sizes[page_index][1]
+        return pos.x() / self._zoom, height_pt - pos.y() / self._zoom
+
+    def begin_selection(self, page_index: int, pos) -> None:
+        tp = self._textpage(page_index)
+        index = None
+        if tp is not None:
+            x, y = self._point_to_pdf(page_index, pos)
+            tol = 4 / self._zoom
+            index = tp.get_index(x, y, tol, tol)
+        if index is None:
+            self._selecting_anchor = None
+            self._set_selection(None)  # click on empty space clears any old selection
+            return
+        self._selecting_anchor = index
+        self._set_selection(page_index, index, index + 1)
+
+    def extend_selection(self, page_index: int, pos) -> None:
+        # ponytail: drag must stay on the page it started on -- no cross-page
+        # selection spans; add if long documents make that feel expected.
+        if self._selecting_anchor is None or not self._selection or self._selection[0] != page_index:
+            return
+        tp = self._textpage(page_index)
+        if tp is None:
+            return
+        x, y = self._point_to_pdf(page_index, pos)
+        tol = 4 / self._zoom
+        index = tp.get_index(x, y, tol, tol)
+        if index is None:
+            return
+        lo, hi = sorted((self._selecting_anchor, index))
+        self._set_selection(page_index, lo, hi + 1)
+
+    def finish_selection(self, page_index: int, pos) -> bool:
+        if self._selecting_anchor is None:
+            return False
+        self.extend_selection(page_index, pos)
+        self._selecting_anchor = None
+        if self._selection is not None and self._selection[2] - self._selection[1] <= 1:
+            self._set_selection(None)
+            return False
+        return self._selection is not None
+
+    def _set_selection(self, page_index: int | None, start: int = 0, end: int = 0) -> None:
+        old_page = self._selection[0] if self._selection else None
+        self._selection = None if page_index is None else (page_index, start, end)
+        for page in {old_page, page_index} - {None}:
+            if 0 <= page < len(self._page_labels):
+                self._page_labels[page].update()
+
+    def update_hover_cursor(self, label: "PageLabel", page_index: int, pos) -> None:
+        x, y = self._point_to_pdf(page_index, pos)
+        hit = any(l <= x <= r and b <= y <= t for (l, b, r, t), _ in self._links_for(page_index))
+        label.setCursor(Qt.CursorShape.PointingHandCursor if hit else Qt.CursorShape.IBeamCursor)
+
+    def open_link_at(self, page_index: int, pos) -> None:
+        x, y = self._point_to_pdf(page_index, pos)
+        for (l, b, r, t), target in self._links_for(page_index):
+            if l <= x <= r and b <= y <= t:
+                if isinstance(target, str):
+                    QDesktopServices.openUrl(QUrl(target))
+                else:
+                    self._scroll_to_page(int(target))
+                return
+
+    def paint_selection_overlay(self, label: "PageLabel", page_index: int) -> None:
+        if not self._selection or self._selection[0] != page_index:
+            return
+        _, start, end = self._selection
+        tp = self._textpage(page_index)
+        if tp is None:
+            return
+        height_pt = self._page_sizes[page_index][1]
+        painter = QPainter(label)
+        painter.setBrush(QColor(60, 120, 255, 90))
+        painter.setPen(Qt.PenStyle.NoPen)
+        count = tp.count_rects(start, end - start)
+        for i in range(count):
+            l, b, r, t = tp.get_rect(i)
+            painter.drawRect(
+                QRectF(
+                    l * self._zoom,
+                    (height_pt - t) * self._zoom,
+                    (r - l) * self._zoom,
+                    (t - b) * self._zoom,
+                )
+            )
+        painter.end()
+
+    def show_selection_menu(self, global_pos) -> None:
+        if not self._selection:
+            return
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy")
+        if menu.exec(global_pos) == copy_action:
+            self._copy_selection()
+
+    def _copy_selection(self) -> None:
+        if not self._selection:
+            return
+        page_index, start, end = self._selection
+        tp = self._textpage(page_index)
+        if tp is None:
+            return
+        QApplication.clipboard().setText(tp.get_text_range(start, end - start))
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self._copy_selection()
+        else:
+            super().keyPressEvent(event)
 
     # -- edits ----------------------------------------------------------
 
